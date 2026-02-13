@@ -1,0 +1,135 @@
+name: Auto-tag on PR merge to main
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions: {}
+
+jobs:
+  auto-tag:
+    if: >-
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.base.ref == 'main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine version bump and create tag
+        id: tagging
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: |
+          set -euo pipefail
+
+          # -----------------------------------------------------------
+          # 1. Check for "major" label on the PR
+          # -----------------------------------------------------------
+          HAS_MAJOR_LABEL="false"
+          if echo "$PR_LABELS" | jq -e 'map(select(. == "major")) | length > 0' > /dev/null 2>&1; then
+            HAS_MAJOR_LABEL="true"
+            echo "PR has 'major' label."
+          fi
+
+          # -----------------------------------------------------------
+          # 2. Classify the source branch (with major label override)
+          # -----------------------------------------------------------
+          BUMP_TYPE=""
+          if [[ "$HEAD_REF" == release/* ]]; then
+            if [[ "$HAS_MAJOR_LABEL" == "true" ]]; then
+              BUMP_TYPE="major"
+            else
+              BUMP_TYPE="minor"
+            fi
+          elif [[ "$HEAD_REF" == hotfix/* ]]; then
+            BUMP_TYPE="patch"
+          else
+            echo "Branch '${HEAD_REF}' is not release/* or hotfix/*. Skipping auto-tag."
+            exit 0
+          fi
+
+          echo "Detected bump type: ${BUMP_TYPE} (from branch ${HEAD_REF})"
+
+          # -----------------------------------------------------------
+          # 3. Find the latest SemVer tag on main
+          # -----------------------------------------------------------
+          LATEST_TAG=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n 1 || true)
+          PREVIOUS_TAG="${LATEST_TAG:-"(none)"}"
+
+          if [[ -z "$LATEST_TAG" ]]; then
+            echo "No existing SemVer tag found."
+
+            if [[ "$BUMP_TYPE" == "minor" || "$BUMP_TYPE" == "major" ]]; then
+              NEW_TAG="v1.0.0"
+              echo "First release -- using ${NEW_TAG}"
+            else
+              echo "ERROR: No existing version tag found. Cannot bump patch without a base version."
+              echo "Please create an initial release first (e.g., merge a release/* branch to set v1.0.0)."
+              exit 1
+            fi
+          else
+            echo "Latest tag: ${LATEST_TAG}"
+
+            # Strip leading 'v' and split into components
+            VERSION="${LATEST_TAG#v}"
+            IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+
+            if [[ "$BUMP_TYPE" == "major" ]]; then
+              MAJOR=$((MAJOR + 1))
+              MINOR=0
+              PATCH=0
+            elif [[ "$BUMP_TYPE" == "minor" ]]; then
+              MINOR=$((MINOR + 1))
+              PATCH=0
+            elif [[ "$BUMP_TYPE" == "patch" ]]; then
+              PATCH=$((PATCH + 1))
+            fi
+
+            NEW_TAG="v${MAJOR}.${MINOR}.${PATCH}"
+          fi
+
+          echo "New tag: ${NEW_TAG}"
+
+          # -----------------------------------------------------------
+          # 4. Create and push the annotated tag
+          # -----------------------------------------------------------
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git tag -a "${NEW_TAG}" -m "Release ${NEW_TAG}"
+          git push origin "${NEW_TAG}"
+
+          echo "Successfully created and pushed tag ${NEW_TAG}"
+
+          # -----------------------------------------------------------
+          # 5. Set outputs for downstream steps
+          # -----------------------------------------------------------
+          echo "new_tag=${NEW_TAG}" >> "$GITHUB_OUTPUT"
+
+          # -----------------------------------------------------------
+          # 6. Write job summary
+          # -----------------------------------------------------------
+          {
+            echo "## Auto-tag summary"
+            echo ""
+            echo "| Field | Value |"
+            echo "|-------|-------|"
+            echo "| Previous tag | \`${PREVIOUS_TAG}\` |"
+            echo "| New tag | \`${NEW_TAG}\` |"
+            echo "| Bump type | \`${BUMP_TYPE}\` |"
+            echo "| Source branch | \`${HEAD_REF}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Create GitHub Release
+        if: steps.tagging.outputs.new_tag != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tagging.outputs.new_tag }}
+          generate_release_notes: true
