@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+
+{% block title %}Geocode Search{% endblock %}
+
+{% block content %}
+<h1 class="mb-4">City Geocode Search</h1>
+
+<form method="post" action="/search" class="mb-4">
+    <div class="input-group">
+        <input type="text" name="city" class="form-control"
+               placeholder="Enter a city name..." required
+               value="{{ city or '' }}">
+        <button class="btn btn-primary" type="submit">Search</button>
+    </div>
+</form>
+
+{% if error %}
+<div class="alert alert-danger" role="alert">
+    {{ error }}
+</div>
+{% endif %}
+
+{% if result %}
+<div class="card">
+    <div class="card-body">
+        <h5 class="card-title">{{ result.name }}</h5>
+        <p class="card-text">
+            <strong>Latitude:</strong> {{ result.latitude }}<br>
+            <strong>Longitude:</strong> {{ result.longitude }}
+        </p>
+    </div>
+</div>
+{% endif %}
+{% endblock %}
